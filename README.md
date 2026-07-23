@@ -127,25 +127,37 @@ python 02_format_dataset.py
 
 **Code Walkthrough**:
 ```python
-import json
+import random
 from transformers import AutoTokenizer
+from datasets import load_dataset
 
-tokenizer = AutoTokenizer.from_pretrained("./LFM2.5-230M")
+tokenizer = AutoTokenizer.from_pretrained("./LFM2.5-230M", trust_remote_code=True)
+dataset = load_dataset("json", data_files="train.jsonl")
 
-with open("train.jsonl", "r") as infile, open("train_formatted.jsonl", "w") as outfile:
-    for line in infile:
-        data = json.loads(line)
-        messages = [
-            {"role": "user", "content": f"Review this essay and provide constructive feedback:\n\n{data['essay']}"},
-            {"role": "assistant", "content": data["feedback"]}
-        ]
-        formatted_text = tokenizer.apply_chat_template(messages, tokenize=False)
-        outfile.write(json.dumps({"text": formatted_text}) + "\n")
+PROMPT_VARIATIONS = [
+    "Review this essay and give feedback:",
+    "Please critique the following essay and suggest improvements:",
+    "Analyze this essay and provide constructive evaluation:",
+    "Read this student essay and offer detailed feedback:",
+    "Evaluate the clarity, structure, and content of this essay:",
+]
+
+def apply_template(example):
+    prefix = random.choice(PROMPT_VARIATIONS)
+    messages = [
+        {"role": "user", "content": f"{prefix}\n\n{example['essay']}"},
+        {"role": "assistant", "content": example["feedback"]},
+    ]
+    return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
+
+formatted = dataset.map(apply_template).remove_columns(["essay", "feedback"])
+formatted["train"].to_json("train_formatted.jsonl")
 ```
 
 **Explanation**:
 - **Why Chat Templates?**: Raw text must be structured into role-delimited turns (`user`, `assistant`) so the LLM clearly distinguishes user queries from target responses.
 - `tokenizer.apply_chat_template(messages, tokenize=False)` injects special control tokens (e.g. `<|im_start|>user`, `<|im_end|>`) specific to the model.
+- **Why prompt variations?**: Randomly rotating five instruction phrasings teaches the adapter to respond to the *task* (essay review) rather than memorizing one fixed prompt string. If the local tokenizer is missing, the script falls back to writing the ChatML format directly.
 
 ---
 
@@ -158,13 +170,16 @@ python 03_train_lora.py
 
 **Code Walkthrough**:
 ```python
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
 
-model = AutoModelForCausalLM.from_pretrained("./LFM2.5-230M")
-tokenizer = AutoTokenizer.from_pretrained("./LFM2.5-230M")
+model = AutoModelForCausalLM.from_pretrained(
+    "./LFM2.5-230M", torch_dtype=torch.float32, trust_remote_code=True
+)
+tokenizer = AutoTokenizer.from_pretrained("./LFM2.5-230M", trust_remote_code=True)
 dataset = load_dataset("json", data_files="train_formatted.jsonl")
 
 # Configure LoRA adapter
@@ -179,11 +194,15 @@ lora_config = LoraConfig(
 
 training_args = SFTConfig(
     output_dir="./results",
-    num_train_epochs=3,
+    num_train_epochs=1,        # 1 epoch keeps the CPU demo fast
     per_device_train_batch_size=1,
     learning_rate=2e-4,
+    logging_steps=1,
+    save_strategy="no",
+    report_to="none",
+    packing=False,
     dataset_text_field="text",
-    max_length=128,            # Short length for fast CPU demonstration
+    max_length=1024,
     use_cpu=True,
     dataloader_pin_memory=False,
 )
@@ -203,7 +222,8 @@ trainer.save_model("./essay_reviewer_lora")
 **Explanation**:
 - **Why LoRA (Low-Rank Adaptation)?**: Instead of updating all 230M parameters (expensive), LoRA freezes the original model and injects small pair matrices $W = W_0 + \Delta W$ where $\Delta W = B \times A$.
 - **Parameters**: `r=8` sets low-rank matrix rank; `target_modules=["q_proj", "v_proj"]` targets key attention weights.
-- Saves adapter weights (~2MB) to `./essay_reviewer_lora`.
+- The model is loaded in `float32` and pinned to CPU (`use_cpu=True`) so the workshop runs on a laptop without a GPU.
+- Saves the small adapter weights to `./essay_reviewer_lora`.
 
 ---
 
@@ -282,26 +302,28 @@ python 06_convert_and_quantize.py
 
 **Code Walkthrough**:
 ```python
-import subprocess
+import sys, subprocess
 
 # Phase 1: Convert HF merged model to GGUF F16 format
-cmd_convert = [
-    ".venv/Scripts/python.exe", "convert_hf_to_gguf.py",
+#   (the script auto-locates convert_hf_to_gguf.py and uses the current interpreter)
+subprocess.run([
+    sys.executable, "convert_hf_to_gguf.py",
     "./essay_reviewer_merged",
     "--outfile", "essay_reviewer_finetuned_f16.gguf",
-    "--outtype", "f16"
-]
-subprocess.run(cmd_convert, check=True)
+    "--outtype", "f16",
+], check=True)
 
 # Phase 2: Quantize F16 GGUF down to 8-bit Q8_0
-cmd_quantize = [
+#   (the script auto-locates llama-quantize in ./llama.cpp_bin/)
+subprocess.run([
     "./llama.cpp_bin/llama-quantize.exe",
     "essay_reviewer_finetuned_f16.gguf",
     "essay_reviewer_finetuned_q8.gguf",
-    "Q8_0"
-]
-subprocess.run(cmd_quantize, check=True)
+    "Q8_0",
+], check=True)
 ```
+
+*The real script (`06_convert_and_quantize.py`) wraps this in `find_convert_script()` and `find_quantize_binary()` helpers so it works whether the binaries live in `./llama.cpp_bin/`, `./llama.cpp/`, or on your `PATH`.*
 
 **Explanation**:
 - **Why GGUF & Conversion?**: PyTorch `.safetensors` files require Python runtime overhead. `convert_hf_to_gguf.py` converts Hugging Face tensors into GGUF binary format optimized for CPU SIMD/AVX instructions.
@@ -359,7 +381,7 @@ python 06_convert_and_quantize.py
 - **Why did GGUF conversion need custom code (`conversion/lfm2.py`)?**:
   Standard architectures (Llama, Mistral) have default conversion rules. Liquid AI LFM2.5 is a new hybrid architecture (`Lfm2ForCausalLM`) requiring custom layer tensor mappings supplied in `conversion/lfm2.py`.
 - **How to speed up training during workshops**:
-  Set `epochs=1` or `max_length=128` in `03_train_lora.py`.
+  Training already defaults to `epochs=1`. To go faster still, lower `max_length` (e.g. `128`) in `03_train_lora.py` — this truncates the longer essays.
 - **Pre-workshop recommendation**:
   Pre-install `.venv` and pre-download `./LFM2.5-230M` before the workshop so participants don't rely on heavy venue Wi-Fi downloads.
 
