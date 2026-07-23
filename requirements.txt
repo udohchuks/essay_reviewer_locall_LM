@@ -1,0 +1,13 @@
+# Core ML & Transformers
+torch>=2.0.0
+transformers>=4.40.0
+peft>=0.10.0
+trl>=0.8.0
+datasets>=2.18.0
+accelerate>=0.28.0
+
+# GGUF Conversion Utilities
+gguf>=0.6.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+requests>=2.31.0

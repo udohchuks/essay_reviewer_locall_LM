@@ -1,0 +1,26 @@
+# Environment
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+
+# Model Downloads & Large Weights
+LFM2.5-230M/
+essay_reviewer_lora/
+essay_reviewer_merged/
+results/
+*.gguf
+
+# Prebuilt Executables & Extra Artifacts
+/llama.cpp_bin/
+/llama.cpp_zip/
+*.zip
+*.tar.gz
+*.exe
+*.dll
+
+# IDE & OS Files
+.DS_Store
+.vscode/
+.idea/
