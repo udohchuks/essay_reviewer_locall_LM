@@ -13,8 +13,8 @@ OUTPUT_DIR = "./LFM2.5-230M"
 
 def download_base_model(model_id=MODEL_ID, output_dir=OUTPUT_DIR):
     print(f"[Step 1] Fetching base model '{model_id}' from Hugging Face Hub...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
 
     os.makedirs(output_dir, exist_ok=True)
     print(f"[Step 1] Saving model and tokenizer locally to '{output_dir}'...")

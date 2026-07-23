@@ -19,7 +19,7 @@ def train_lora(
     base_model_dir=BASE_MODEL_DIR,
     dataset_path=DATASET_PATH,
     lora_output_dir=LORA_OUTPUT_DIR,
-    epochs=3,
+    epochs=1,
     lr=2e-4
 ):
     import torch
@@ -28,8 +28,9 @@ def train_lora(
     model = AutoModelForCausalLM.from_pretrained(
         base_model_dir,
         torch_dtype=torch.float32,
+        trust_remote_code=True,
     )
-    tokenizer = AutoTokenizer.from_pretrained(base_model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(base_model_dir, trust_remote_code=True)
 
     print(f"[Step 3] Loading formatted dataset from '{dataset_path}'...")
     dataset = load_dataset("json", data_files=dataset_path)
@@ -55,7 +56,7 @@ def train_lora(
         report_to="none",
         packing=False,
         dataset_text_field="text",
-        max_length=128,
+        max_length=1024,
         bf16=False,
         use_cpu=True,
         dataloader_pin_memory=False,
